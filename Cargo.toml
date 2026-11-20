@@ -1,0 +1,25 @@
+[package]
+name = "mp3-visualizer"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust MP3 player with beat-focused audio visualization (prototype)"
+
+[dependencies]
+# GUI（原型采用 eframe/egui：即时模式绘制非常适合实时可视化）
+eframe = "0.29"
+egui = "0.29"
+
+# 音频解码（纯 Rust），便于拿到 PCM 做专项分析
+symphonia = { version = "0.5", features = ["mp3", "isomp4", "flac", "wav", "ogg"] }
+
+# 音频播放
+rodio = "0.20"
+
+# FFT 频谱分析
+rustfft = "6"
+
+# 文件选择对话框
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
