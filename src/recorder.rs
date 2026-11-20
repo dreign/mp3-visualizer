@@ -68,6 +68,10 @@ pub struct Recorder {
     started_at: Option<Instant>,
     last_capture: Option<Instant>,
     last_audio: Option<Instant>,
+    /// 已写入音轨的源音频时间游标（秒）。音轨样本严格从此处连续推进，
+    /// 不再每帧拿播放器的 position 当起点（position 与 wall-clock 会漂移，
+    /// 导致相邻帧区间重叠/跳跃，产生沙沙声与咔哒）。
+    audio_cursor: Option<f32>,
     region: Option<CaptureRegion>,
     frames: u64,
 }
@@ -84,6 +88,7 @@ impl Default for Recorder {
             started_at: None,
             last_capture: None,
             last_audio: None,
+            audio_cursor: None,
             region: None,
             frames: 0,
         }
@@ -178,6 +183,7 @@ impl Recorder {
         self.started_at = Some(Instant::now());
         self.last_capture = None;
         self.last_audio = None;
+        self.audio_cursor = None; // 首帧用当时的 position 初始化
         self.region = Some(region);
         self.frames = 0;
         Ok(())
@@ -217,8 +223,12 @@ impl Recorder {
         }
     }
 
-    /// 按真实经过时间写入一段音轨。position 为当前播放位置（秒），
-    /// paused 时写静音保持时间轴连续；volume 与播放器音量一致。
+    /// 写入一段音轨。position 为播放器当前源音频位置（秒）。
+    ///
+    /// 关键：音轨样本严格由 `audio_cursor` 连续推进——每帧写入 `[cursor, target]`
+    /// 的源音频，写完把游标设为 target。绝不拿 position 直接当采样起点再配合
+    /// wall-clock 的样本数（那会让两个时钟漂移，导致帧边界波形重叠/跳跃→沙沙声）。
+    /// 暂停时 position 冻结，按真实经过时间写静音推进音轨，保持与画面同步。
     pub fn feed_audio(&mut self, track: Option<&Track>, position: f32, paused: bool, volume: f32) {
         if !self.is_recording() { return; }
         let now = Instant::now();
@@ -227,26 +237,47 @@ impl Recorder {
             .map(|t| now.duration_since(t))
             .unwrap_or(Duration::ZERO);
         self.last_audio = Some(now);
+        let wall_n = (elapsed.as_secs_f32() * RECORD_SR as f32).round() as usize;
 
-        let n = (elapsed.as_secs_f32() * RECORD_SR as f32).round() as usize;
-        if n == 0 { return; }
-        let n = n.min(RECORD_SR as usize); // 卡顿保护：一次最多补 1 秒
+        // 首帧：以当前播放位置为起点。
+        let cursor = *self.audio_cursor.get_or_insert(position);
 
-        let mut chunk = Vec::with_capacity(n * 4);
+        let mut chunk: Vec<u8> = Vec::new();
+        let mut next_cursor = cursor;
+
         match track {
             Some(t) if !paused && volume > 0.0 => {
-                let sr = t.sample_rate;
-                for i in 0..n {
-                    let src_t = position + i as f32 / RECORD_SR as f32;
-                    let (l, r) = sample_stereo(&t.samples_left, &t.samples_right, src_t, sr);
-                    push_i16(&mut chunk, l * volume);
-                    push_i16(&mut chunk, r * volume);
+                // 正常播放：目标 = 当前音频位置，写入 [cursor, position]。
+                // 若 position 因暂停/跳转落后于游标，则以游标为准，不倒读音频。
+                let target = position.max(cursor);
+                let span = (target - cursor).min(1.0); // 卡顿保护：一次最多补 1 秒
+                let n = (span * RECORD_SR as f32).round() as usize;
+                if n > 0 {
+                    let sr = t.sample_rate;
+                    chunk.reserve_exact(n * 4);
+                    for i in 0..n {
+                        let src_t = cursor + i as f32 / RECORD_SR as f32;
+                        let (l, r) = sample_stereo(&t.samples_left, &t.samples_right, src_t, sr);
+                        push_i16(&mut chunk, l * volume);
+                        push_i16(&mut chunk, r * volume);
+                    }
+                    next_cursor = cursor + n as f32 / RECORD_SR as f32;
                 }
             }
-            _ => chunk.resize(n * 4, 0u8), // 静音：无曲目 / 暂停 / 音量为 0
+            _ => {
+                // 暂停 / 无曲目 / 静音：按真实时间写静音推进音轨，使音轨时长与画面一致。
+                // cursor 保持不动（暂停没有消费源音频），恢复播放后立即从原处衔接。
+                if wall_n > 0 {
+                    chunk.resize(wall_n.min(RECORD_SR as usize) * 4, 0u8);
+                }
+            }
         }
-        if let Some(f) = self.audio_file.as_mut() {
-            let _ = f.write_all(&chunk);
+
+        self.audio_cursor = Some(next_cursor);
+        if !chunk.is_empty() {
+            if let Some(f) = self.audio_file.as_mut() {
+                let _ = f.write_all(&chunk);
+            }
         }
     }
 
@@ -264,6 +295,7 @@ impl Recorder {
         self.started_at = None;
         self.last_capture = None;
         self.last_audio = None;
+        self.audio_cursor = None;
         self.region = None;
 
         let video_result = match done_rx.and_then(|rx| rx.recv().ok()) {
