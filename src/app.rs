@@ -1153,7 +1153,7 @@ fn draw_rainbow_text(
     }
 }
 
-/// 无歌词时的几何占位：5 个多边形随频段能量/节拍跳动，颜色取主题色带。
+/// 无歌词时的几何占位：6 个形状（三角/方/五边形/六边形/菱形/圆）随频段能量/节拍跳动，颜色取主题色带。
 fn draw_geometry_placeholder(
     p: &Painter,
     r: Rect,
@@ -1162,22 +1162,23 @@ fn draw_geometry_placeholder(
     time: f32,
     playing: bool,
 ) {
+    const KINDS: usize = 6;
     let energy = (frame.low * 0.50 + frame.mid * 0.30 + frame.high * 0.20).clamp(0.0, 1.0);
     let cx = r.center().x;
     let cy = r.center().y;
-    let gap = (r.width() / 7.0).clamp(52.0, 150.0);
+    let gap = (r.width() / 8.0).clamp(48.0, 132.0);
     let base = (r.height() * 0.11).clamp(16.0, 52.0);
-    for i in 0..5usize {
+    for i in 0..KINDS {
         let phase = time * 1.8 + i as f32 * 0.85;
         let bounce = if playing {
-            (1.0 - ((frame.beat_phase + i as f32 / 5.0) % 1.0)).powi(6) * 0.38
+            (1.0 - ((frame.beat_phase + i as f32 / KINDS as f32) % 1.0)).powi(6) * 0.38
         } else {
             0.0
         };
         let size = base * (0.78 + energy * 0.32 + frame.pulse * 0.38 + bounce);
-        let x = cx + (i as f32 - 2.0) * gap;
+        let x = cx + (i as f32 - (KINDS as f32 - 1.0) * 0.5) * gap;
         let y = cy + phase.sin() * base * 0.32;
-        let hue = (i as f32 / 5.0 + time * 0.06) % 1.0;
+        let hue = (i as f32 / KINDS as f32 + time * 0.06) % 1.0;
         let col = c(&ramp_color(pal, hue));
         let rot = time * (0.4 + i as f32 * 0.12) + i as f32;
         let glow = placeholder_poly(x, y, size * 1.28, i, rot);
@@ -1190,8 +1191,17 @@ fn draw_geometry_placeholder(
     }
 }
 
-/// 占位几何顶点：三角 / 方 / 五边形 / 六边形 / 菱形。
+/// 占位几何顶点：三角 / 方 / 五边形 / 六边形 / 菱形 / 圆形（24 段近似）。
 fn placeholder_poly(cx: f32, cy: f32, size: f32, kind: usize, rot: f32) -> Vec<Pos2> {
+    if kind == 5 {
+        let n = 24usize;
+        return (0..n)
+            .map(|i| {
+                let a = rot + i as f32 * std::f32::consts::TAU / n as f32;
+                Pos2::new(cx + size * a.cos(), cy + size * a.sin())
+            })
+            .collect();
+    }
     let n = match kind { 0 => 3, 1 => 4, 2 => 5, 3 => 6, _ => 4 };
     let offset = if kind == 4 {
         std::f32::consts::FRAC_PI_4

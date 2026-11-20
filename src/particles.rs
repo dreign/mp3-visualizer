@@ -1,5 +1,5 @@
 //! 粒子流可视化模式：跟随节奏跳动的炫彩粒子拖尾，整体向右前行，
-//! 以随机几何形状（三角/方/五边形/六边形/菱形/星形）作为主锚定物。
+//! 以随机几何形状（三角/方/五边形/六边形/菱形/星形/圆形）作为主锚定物。
 //!
 //! 设计要点：
 //! - 坐标用相对画布的归一化值 0..1，窗口缩放后粒子位置自动按比例映射；
@@ -25,6 +25,7 @@ const MAX_PARTICLES: usize = 300;  // 粒子上限，防止长时间播放后无
 const ANCHOR_COUNT: usize = 8;     // 同时在场的几何锚定物数量
 const FADE_IN: f32 = 0.16;         // 生命周期前 16% 淡入
 const FADE_OUT: f32 = 0.36;        // 生命周期后 36% 渐隐
+const CIRCLE_SEGMENTS: usize = 24; // 圆形锚定物的多边形近似分段数
 
 /// 锚定物可选的几何形状。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +36,7 @@ enum ShapeKind {
     Hexagon,
     Diamond,
     Star,
+    Circle,
 }
 
 /// 锚定物所属频段：决定形状、色段、寿命、尺寸与拖尾波动频率。
@@ -65,12 +67,12 @@ impl Band {
         }
     }
 
-    /// 低频厚重、中频均衡、高频尖锐。
+    /// 低频厚重、中频均衡、高频尖锐；圆形平衡柔和，三频段均可出现。
     fn shapes(self) -> &'static [ShapeKind] {
         match self {
-            Band::Low => &[ShapeKind::Square, ShapeKind::Hexagon, ShapeKind::Diamond],
-            Band::Mid => &[ShapeKind::Pentagon, ShapeKind::Diamond, ShapeKind::Triangle],
-            Band::High => &[ShapeKind::Triangle, ShapeKind::Star, ShapeKind::Hexagon],
+            Band::Low => &[ShapeKind::Square, ShapeKind::Hexagon, ShapeKind::Diamond, ShapeKind::Circle],
+            Band::Mid => &[ShapeKind::Pentagon, ShapeKind::Diamond, ShapeKind::Triangle, ShapeKind::Circle],
+            Band::High => &[ShapeKind::Triangle, ShapeKind::Star, ShapeKind::Hexagon, ShapeKind::Circle],
         }
     }
 
@@ -586,7 +588,8 @@ fn rgb(c: &[u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// 生成几何形状顶点。星形第一个点为中心（作为三角扇锚点），轮廓绘制时跳过。
+/// 生成几何形状顶点。星形第一个点为中心（作为三角扇锚点），轮廓绘制时跳过；
+/// 圆形用 24 段正多边形近似，可直接走三角扇填充与闭合轮廓逻辑。
 fn shape_points(kind: ShapeKind, cx: f32, cy: f32, radius: f32, rot: f32) -> Vec<Pos2> {
     let mut pts = Vec::new();
     if kind == ShapeKind::Star {
@@ -603,6 +606,7 @@ fn shape_points(kind: ShapeKind, cx: f32, cy: f32, radius: f32, rot: f32) -> Vec
         ShapeKind::Square | ShapeKind::Diamond => 4,
         ShapeKind::Pentagon => 5,
         ShapeKind::Hexagon => 6,
+        ShapeKind::Circle => CIRCLE_SEGMENTS,
         ShapeKind::Star => unreachable!(),
     };
     let offset = if kind == ShapeKind::Diamond { TAU / 4.0 } else { -TAU / 2.0 };
